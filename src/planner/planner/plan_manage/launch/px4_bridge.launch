@@ -1,0 +1,101 @@
+<launch>
+    <arg name="drone_id" default="0"/>
+
+    <arg name="map_size_x" value="50.0"/>
+    <arg name="map_size_y" value="50.0"/>
+    <arg name="map_size_z" value=" 3.0"/>
+
+    <arg name="flight_type" default="1"/>
+
+    <arg name="point_num" default="4"/>
+    <arg name="target0_x" default="0.0"/>
+    <arg name="target0_y" default="0.0"/>
+    <arg name="target0_z" default="0.0"/>
+    <arg name="target1_x" default="5.0"/>
+    <arg name="target1_y" default="0.0"/>
+    <arg name="target1_z" default="0.0"/>
+    <arg name="target2_x" default="-5.0"/>
+    <arg name="target2_y" default="0.0"/>
+    <arg name="target2_z" default="0.0"/>
+    <arg name="target3_x" default="0.0"/>
+    <arg name="target3_y" default="0.0"/>
+    <arg name="target3_z" default="0.0"/>
+    <arg name="target4_x" default="0.0"/>
+    <arg name="target4_y" default="0.0"/>
+    <arg name="target4_z" default="0.0"/>
+
+    <!-- use PX4 EKF2 as odometry, nav_msgs/Odometry -->
+    <arg name="odom_topic" value="mavros/local_position/odom"/>
+    <arg name="depth_topic" value="/iris_D435i/realsense/depth_camera/depth/image_raw"/>
+    <arg name="cloud_topic" default="/cloud_registered"/>
+    <arg name="cmd_topic" value="/position_cmd"/>
+
+    <include file="$(find ego_planner)/launch/include/advanced_param_gazebo.xml">
+        <arg name="drone_id" value="$(arg drone_id)"/>
+        <arg name="map_size_x_" value="$(arg map_size_x)"/>
+        <arg name="map_size_y_" value="$(arg map_size_y)"/>
+        <arg name="map_size_z_" value="$(arg map_size_z)"/>
+        <arg name="odometry_topic" value="$(arg odom_topic)"/>
+
+        <arg name="camera_pose_topic" value="null"/>
+        <!-- for vision-based flight -->
+        <!-- <arg name="depth_topic" value="$(arg depth_topic)"/>
+        <arg name="cloud_topic" value="null"/> -->
+        <!-- for lidar-based flight -->
+        <arg name="depth_topic" value="null"/>
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+
+        <arg name="cx" value="320.5"/>
+        <arg name="cy" value="240.5"/>
+        <arg name="fx" value="554.254691191187"/>
+        <arg name="fy" value="554.254691191187"/>
+
+        <arg name="max_vel" value="1.0" />
+        <arg name="max_acc" value="2.0" />
+        <arg name="max_jer" value="4.0" />
+
+        <arg name="planning_horizon" value="7.5" />
+        <arg name="use_multitopology_trajs" value="false" />
+
+        <arg name="flight_type" value="$(arg flight_type)" />
+
+        <arg name="point_num" value="$(arg point_num)" />
+        <arg name="point0_x" value="$(arg target0_x)" />
+        <arg name="point0_y" value="$(arg target0_y)" />
+        <arg name="point0_z" value="$(arg target0_z)" />
+        <arg name="point1_x" value="$(arg target1_x)" />
+        <arg name="point1_y" value="$(arg target1_y)" />
+        <arg name="point1_z" value="$(arg target1_z)" />
+        <arg name="point2_x" value="$(arg target2_x)" />
+        <arg name="point2_y" value="$(arg target2_y)" />
+        <arg name="point2_z" value="$(arg target2_z)" />
+        <arg name="point3_x" value="$(arg target3_x)" />
+        <arg name="point3_y" value="$(arg target3_y)" />
+        <arg name="point3_z" value="$(arg target3_z)" />
+        <arg name="point4_x" value="$(arg target4_x)" />
+        <arg name="point4_y" value="$(arg target4_y)" />
+        <arg name="point4_z" value="$(arg target4_z)" />
+    </include>
+
+    <node pkg="ego_planner" name="drone_$(arg drone_id)_traj_server" type="traj_server" output="screen">
+        <remap from="position_cmd" to="$(arg cmd_topic)"/>
+        <remap from="~planning/trajectory" to="/planning/trajectory"/>
+        <remap from="~heartbeat" to="/traj_server/heartbeat"/>
+        <param name="traj_server/time_forward" value="1.0" type="double"/>
+    </node>
+
+    <node pkg="odom_visualization" name="drone_$(arg drone_id)_odom_visualization" type="odom_visualization" output="screen">
+        <remap from="~odom" to="$(arg odom_topic)"/>
+        <param name="mesh_resource" type="string" value="package://odom_visualization/meshes/fake_drone.dae"/>
+        <param name="rotate_yaw_deg" value="90.0"/>
+        
+        <param name="color/a" value="1.0"/>    
+        <param name="color/r" value="1.0"/>        
+        <param name="color/g" value="1.0"/>        
+        <param name="color/b" value="1.0"/>       
+        <param name="covariance_scale" value="100.0"/>       
+        <param name="robot_scale" value="1.0"/>
+        <param name="tf45" value="false"/>
+        <param name="drone_id" value="$(arg drone_id)"/>
+    </node>
+</launch>

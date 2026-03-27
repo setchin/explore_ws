@@ -1,0 +1,12 @@
+takeoff_height: 1.5
+takeoff_hover_time: 2.0
+use_velocity_cmd: false
+
+yaw_tolerance_deg: 5.0
+goal_hover_time: 1.0
+goal_reach_tolerance_m: 0.2
+
+position_to_explore:
+  - {x: 1.5, y: -2.2, z: 1.5, yaw_deg: 0.0}
+  - {x: 4.8, y: -2.2, z: 1.5, yaw_deg: 90.0}
+  - {x: 1.0, y: -5.5, z: 2.0, yaw_deg: 180.0}

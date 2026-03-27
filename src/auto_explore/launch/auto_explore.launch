@@ -1,0 +1,9 @@
+<launch>
+  <arg name="config_path" default="$(find auto_explore)/cfg/landing_param_astro_with_yaw.yaml"/>
+  <arg name="rate" default="100"/>
+
+  <node pkg="auto_explore" type="explore_positions.py" name="explore_positions" output="screen">
+    <param name="config_path" value="$(arg config_path)"/>
+    <param name="rate" value="$(arg rate)"/>
+  </node>
+</launch>
