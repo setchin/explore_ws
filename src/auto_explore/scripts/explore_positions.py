@@ -28,7 +28,7 @@ class ExplorePositionsNode(object):
         self.use_velocity_cmd = self.config.get('use_velocity_cmd', False)
         self.yaw_tolerance_deg = self.config.get('yaw_tolerance_deg', 5.0)
         self.goal_hover_time = self.config.get('goal_hover_time', 1.0)
-        self.goal_reach_tol = self.config.get('goal_reach_tolerance_m', 0.2)
+        self.goal_reach_tol = self.config.get('goal_reach_tolerance_m', 0.1)
 
         self.local_pose = PoseStamped()
         self.local_velocity = TwistStamped()
@@ -40,6 +40,7 @@ class ExplorePositionsNode(object):
         self.current_goal_idx = 0
         self.goal_published = False
         self.hover_start_time = None
+        self.track_ego_planner = True
 
         self.setpoint_pub = rospy.Publisher('/mavros/setpoint_raw/local', PositionTarget, queue_size=10)
         self.goal_pub = rospy.Publisher('/goal_with_id', GoalSet, queue_size=10)
@@ -174,7 +175,7 @@ class ExplorePositionsNode(object):
             sp.type_mask = (
                 PositionTarget.IGNORE_VX | PositionTarget.IGNORE_VY | PositionTarget.IGNORE_VZ |
                 PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ |
-                PositionTarget.IGNORE_YAW_RATE
+                PositionTarget.IGNORE_YAW_RATE | PositionTarget.IGNORE_YAW
             )
             sp.position.x = fallback_x
             sp.position.y = fallback_y
@@ -246,20 +247,16 @@ class ExplorePositionsNode(object):
             cur_pos.z - target_xyz[2],
         ])
 
-        self.publish_setpoint_from_position_cmd(
-            self.local_pose.pose.position.x,
-            self.local_pose.pose.position.y,
-            self.local_pose.pose.position.z,
-            target_yaw,
-        )
-
-        if dist <= self.goal_reach_tol:
+        cur_vel = self.local_velocity.twist.linear
+        vel_norm = np.linalg.norm([cur_vel.x, cur_vel.y, cur_vel.z])
+        if dist <= self.goal_reach_tol and vel_norm < 0.1:
+            self.track_ego_planner = False
             cur_yaw = self.get_current_yaw()
             yaw_err_deg = np.rad2deg(abs(self.wrap_to_pi(target_yaw - cur_yaw)))
 
-            self.publish_hold_position(target_xyz[0], target_xyz[1], target_xyz[2], target_yaw)
-
             if yaw_err_deg <= self.yaw_tolerance_deg:
+                rospy.loginfo("Fine tuning pose and yaw using Position Command, dist to goal: %.2f m", dist)
+                self.publish_hold_position(cur_pos.x, cur_pos.y, cur_pos.z, target_yaw) 
                 if self.hover_start_time is None:
                     self.hover_start_time = rospy.Time.now().to_sec()
                     rospy.loginfo('[AUTO_EXPLORE] Goal %d heading aligned, hover timer started.', self.current_goal_idx + 1)
@@ -269,10 +266,24 @@ class ExplorePositionsNode(object):
                     self.current_goal_idx += 1
                     self.goal_published = False
                     self.hover_start_time = None
+                    self.track_ego_planner = True
             else:
                 self.hover_start_time = None
                 rospy.loginfo_throttle(1.0, '[AUTO_EXPLORE] Aligning yaw at goal %d: err %.2f deg.',
                                        self.current_goal_idx + 1, yaw_err_deg)
+                rospy.loginfo("Aligning yaw using Position Command, dist to goal: %.2f m", dist)
+                self.publish_hold_position(cur_pos.x, cur_pos.y, cur_pos.z, target_yaw) 
+        elif self.track_ego_planner:
+            rospy.loginfo("Tracking ego planner, dist to goal: %.2f m", dist)
+            self.publish_setpoint_from_position_cmd(
+            self.local_pose.pose.position.x,
+            self.local_pose.pose.position.y,
+            self.local_pose.pose.position.z,
+            target_yaw,
+            )
+        else:
+            rospy.loginfo("Moving back to goal using Position Command, dist to goal: %.2f m", dist)
+            self.publish_hold_position(target_xyz[0], target_xyz[1], target_xyz[2])
 
     def spin(self):
         rate = rospy.Rate(rospy.get_param('~rate', 100))

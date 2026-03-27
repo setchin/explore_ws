@@ -4,9 +4,9 @@ use_velocity_cmd: false
 
 yaw_tolerance_deg: 5.0
 goal_hover_time: 1.0
-goal_reach_tolerance_m: 0.2
+goal_reach_tolerance_m: 0.1
 
 position_to_explore:
-  - {x: 1.5, y: -2.2, z: 1.5, yaw_deg: 0.0}
-  - {x: 4.8, y: -2.2, z: 1.5, yaw_deg: 90.0}
-  - {x: 1.0, y: -5.5, z: 2.0, yaw_deg: 180.0}
+  - {x: 0, y: -4, z: 1.5, yaw_deg: 0.0}
+  - {x: 3.5, y: -6, z: 1.5, yaw_deg: 90.0}
+  - {x: 7.0, y: -4, z: 2.0, yaw_deg: 180.0}
