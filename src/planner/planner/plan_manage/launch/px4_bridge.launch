@@ -27,7 +27,7 @@
     <!-- use PX4 EKF2 as odometry, nav_msgs/Odometry -->
     <arg name="odom_topic" value="mavros/local_position/odom"/>
     <arg name="depth_topic" value="/iris_D435i/realsense/depth_camera/depth/image_raw"/>
-    <arg name="cloud_topic" default="/cloud_registered"/>
+    <arg name="cloud_topic" default="/cloud_registered_trans"/>
     <arg name="cmd_topic" value="/position_cmd"/>
 
     <include file="$(find ego_planner)/launch/include/advanced_param_gazebo.xml">

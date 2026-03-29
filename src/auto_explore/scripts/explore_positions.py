@@ -7,7 +7,7 @@ import rospy
 import numpy as np
 
 from geometry_msgs.msg import PoseStamped, TwistStamped
-from mavros_msgs.msg import PositionTarget, State as MavrosState
+from mavros_msgs.msg import PositionTarget, State as MavrosState, EstimatorStatus
 from mavros_msgs.srv import SetMode, CommandBool
 from quadrotor_msgs.msg import PositionCommand, GoalSet
 
@@ -34,6 +34,9 @@ class ExplorePositionsNode(object):
         self.local_velocity = TwistStamped()
         self.current_state = MavrosState()
         self.latest_position_cmd = None
+        self.last_local_pose_msg_time = None
+        self.latest_estimator_status = None
+        self.last_estimator_status_msg_time = None
 
         self.state = 'TAKEOFF_HOVER'
         self.takeoff_reached_time = None
@@ -48,10 +51,16 @@ class ExplorePositionsNode(object):
         rospy.Subscriber('/mavros/local_position/pose', PoseStamped, self.local_pose_cb)
         rospy.Subscriber('/mavros/local_position/velocity_local', TwistStamped, self.local_velocity_cb)
         rospy.Subscriber('/mavros/state', MavrosState, self.state_cb)
+        rospy.Subscriber('/mavros/estimator_status', EstimatorStatus, self.estimator_status_cb)
         rospy.Subscriber('/position_cmd', PositionCommand, self.position_cmd_cb)
 
-        rospy.wait_for_service('/mavros/cmd/arming')
-        rospy.wait_for_service('/mavros/set_mode')
+        try:
+            rospy.wait_for_service('/mavros/cmd/arming',timeout=5)
+            rospy.wait_for_service('/mavros/set_mode',timeout=5)
+        except rospy.ROSException as e:
+            rospy.logerr('[AUTO_EXPLORE] Failed to wait for services after 5 seconds: %s', e)
+            exit(1)
+
         self.arming_client = rospy.ServiceProxy('/mavros/cmd/arming', CommandBool)
         self.set_mode_client = rospy.ServiceProxy('/mavros/set_mode', SetMode)
 
@@ -72,12 +81,17 @@ class ExplorePositionsNode(object):
 
     def local_pose_cb(self, msg):
         self.local_pose = msg
+        self.last_local_pose_msg_time = rospy.Time.now()
 
     def local_velocity_cb(self, msg):
         self.local_velocity = msg
 
     def state_cb(self, msg):
         self.current_state = msg
+
+    def estimator_status_cb(self, msg):
+        self.latest_estimator_status = msg
+        self.last_estimator_status_msg_time = rospy.Time.now()
 
     def position_cmd_cb(self, msg):
         if (rospy.Time.now() - msg.header.stamp).to_sec() < 0.5:
@@ -95,18 +109,82 @@ class ExplorePositionsNode(object):
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         return np.arctan2(siny_cosp, cosy_cosp)
 
-    def handle_flight_mode(self):
-        if self.current_state.mode != 'OFFBOARD':
-            try:
-                self.set_mode_client(custom_mode='OFFBOARD')
-            except rospy.ServiceException as e:
-                rospy.logwarn('[AUTO_EXPLORE] SetMode failed: %s', e)
-
+    def arm_vehicle(self):
         if not self.current_state.armed:
             try:
-                self.arming_client(True)
+                response = self.arming_client(True)
+                return response
             except rospy.ServiceException as e:
                 rospy.logwarn('[AUTO_EXPLORE] Arming failed: %s', e)
+
+    def check_flight_mode_in_air(self):
+        if self.current_state.mode != 'OFFBOARD' or not self.current_state.armed:
+            rospy.logwarn_throttle(5.0, '[AUTO_EXPLORE] Not in OFFBOARD mode, Land immediately! Current mode: %s, armed: %s',
+                                   self.current_state.mode, self.current_state.armed)
+            exit(1)
+
+    def estimator_is_healthy(self):
+        if self.latest_estimator_status is None:
+            return False
+
+        st = self.latest_estimator_status
+        attitude_ok = st.attitude_status_flag
+        pos_horiz_ok = st.pos_horiz_rel_status_flag or st.pos_horiz_abs_status_flag
+        pos_vert_ok = st.pos_vert_abs_status_flag or st.pos_vert_agl_status_flag
+        no_faults = (not st.gps_glitch_status_flag) and (not st.accel_error_status_flag)
+        return attitude_ok and pos_horiz_ok and pos_vert_ok and no_faults
+
+    def wait_for_mavros_and_pose(self):
+        pose_timeout_sec = rospy.get_param('~pose_timeout_sec', 0.5)
+        estimator_timeout_sec = rospy.get_param('~estimator_status_timeout_sec', 0.5)
+        wait_sleep_sec = 0.2
+        rospy.loginfo(
+            '[AUTO_EXPLORE] Waiting for MAVROS + fresh pose (<= %.2fs) + fresh healthy estimator status (<= %.2fs).',
+            pose_timeout_sec,
+            estimator_timeout_sec
+        )
+
+        while not rospy.is_shutdown():
+            is_connected = self.current_state.connected
+
+            has_pose = self.last_local_pose_msg_time is not None
+            pose_fresh = False
+            if has_pose:
+                pose_age = (rospy.Time.now() - self.last_local_pose_msg_time).to_sec()
+                pose_fresh = pose_age <= pose_timeout_sec
+
+            has_estimator_status = self.last_estimator_status_msg_time is not None
+            estimator_fresh = False
+            if has_estimator_status:
+                est_age = (rospy.Time.now() - self.last_estimator_status_msg_time).to_sec()
+                estimator_fresh = est_age <= estimator_timeout_sec
+
+            estimator_healthy = self.estimator_is_healthy()
+
+            if is_connected and pose_fresh and estimator_fresh and estimator_healthy:
+                rospy.loginfo(
+                    '[AUTO_EXPLORE] MAVROS connected, local pose fresh, estimator status fresh and healthy.'
+                )
+                return
+
+            if not is_connected:
+                rospy.logwarn_throttle(2.0, '[AUTO_EXPLORE] Waiting for MAVROS connection...')
+            elif not has_pose:
+                rospy.logwarn_throttle(2.0, '[AUTO_EXPLORE] Waiting for /mavros/local_position/pose...')
+            elif not pose_fresh:
+                rospy.logwarn_throttle(2.0, '[AUTO_EXPLORE] Waiting for fresh local pose (timeout %.2fs)...', pose_timeout_sec)
+            elif not has_estimator_status:
+                rospy.logwarn_throttle(2.0, '[AUTO_EXPLORE] Waiting for /mavros/estimator_status...')
+            elif not estimator_fresh:
+                rospy.logwarn_throttle(2.0, '[AUTO_EXPLORE] Waiting for fresh estimator status (timeout %.2fs)...', estimator_timeout_sec)
+            else:
+                rospy.logwarn_throttle(
+                    2.0,
+                    '[AUTO_EXPLORE] Estimator unhealthy: attitude/local position estimate not healthy yet.'
+                )
+
+            rospy.sleep(wait_sleep_sec)
+            
 
     def publish_goal(self, xyz):
         goal_msg = GoalSet()
@@ -186,7 +264,7 @@ class ExplorePositionsNode(object):
         self.setpoint_pub.publish(sp)
 
     def tick_takeoff_hover(self):
-        self.handle_flight_mode()
+        self.arm_vehicle()
 
         cur = self.local_pose.pose.position
         vel = self.local_velocity.twist.linear
@@ -208,7 +286,7 @@ class ExplorePositionsNode(object):
             self.state = 'EXPLORE'
 
     def tick_explore(self):
-        self.handle_flight_mode()
+        self.arm_vehicle()
 
         if len(self.positions_to_explore) == 0:
             self.publish_hold_position(
@@ -256,7 +334,7 @@ class ExplorePositionsNode(object):
 
             if yaw_err_deg <= self.yaw_tolerance_deg:
                 rospy.loginfo("Fine tuning pose and yaw using Position Command, dist to goal: %.2f m", dist)
-                self.publish_hold_position(cur_pos.x, cur_pos.y, cur_pos.z, target_yaw) 
+                self.publish_hold_position(target_xyz[0], target_xyz[1], target_xyz[2], target_yaw) 
                 if self.hover_start_time is None:
                     self.hover_start_time = rospy.Time.now().to_sec()
                     rospy.loginfo('[AUTO_EXPLORE] Goal %d heading aligned, hover timer started.', self.current_goal_idx + 1)
@@ -272,7 +350,7 @@ class ExplorePositionsNode(object):
                 rospy.loginfo_throttle(1.0, '[AUTO_EXPLORE] Aligning yaw at goal %d: err %.2f deg.',
                                        self.current_goal_idx + 1, yaw_err_deg)
                 rospy.loginfo("Aligning yaw using Position Command, dist to goal: %.2f m", dist)
-                self.publish_hold_position(cur_pos.x, cur_pos.y, cur_pos.z, target_yaw) 
+                self.publish_hold_position(target_xyz[0], target_xyz[1], target_xyz[2], target_yaw) 
         elif self.track_ego_planner:
             rospy.loginfo("Tracking ego planner, dist to goal: %.2f m", dist)
             self.publish_setpoint_from_position_cmd(
@@ -287,6 +365,27 @@ class ExplorePositionsNode(object):
 
     def spin(self):
         rate = rospy.Rate(rospy.get_param('~rate', 100))
+        self.wait_for_mavros_and_pose()
+
+        while self.current_state.mode != 'OFFBOARD':
+            try:
+                response = self.set_mode_client(custom_mode='OFFBOARD')
+                rospy.loginfo("Triggering OFFBOARD, response: %s", response)
+            except rospy.ServiceException as e:
+                rospy.logwarn('[AUTO_EXPLORE] SetMode failed: %s', e)
+            rospy.sleep(0.2)
+        rospy.loginfo('[AUTO_EXPLORE] OFFBOARD mode set.')
+        
+        while not self.current_state.armed:
+            try:
+                response = self.arming_client(True)
+                if not response.success:
+                    rospy.loginfo("Arming command sent, but failed. Response: %s", response)
+            except rospy.ServiceException as e:
+                rospy.logwarn('[AUTO_EXPLORE] Arm failed: %s', e)
+            rospy.sleep(0.2)
+        rospy.loginfo('[AUTO_EXPLORE] Vehicle armed.')
+        
         while not rospy.is_shutdown():
             if self.state == 'TAKEOFF_HOVER':
                 self.tick_takeoff_hover()
